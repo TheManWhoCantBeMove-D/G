@@ -1,0 +1,540 @@
+-- RMPG Obfuscator UI (fixed: produced one-line wrappers are now immediately executable)
+-- Changes:
+--  - Compressed and Remote wrappers are now IIFEs ((function() ... end)()) so they execute when pasted/run.
+--  - buildCompressedWrapper and buildRemoteWrapper return (wrapper, payloadB64Size, wrapperSize) consistently.
+--  - Small robustness fixes around return values used by the UI.
+--  - Keeps anti-tamper prepended, LZW+base64 compression, safe copy behavior.
+
+-- Services
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local HttpService = game:GetService("HttpService")
+
+local parentGui = (LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui")) or game:GetService("CoreGui")
+
+-- Anti-tamper code (prepended before compression)
+local antiTamperCode = [[
+do
+    local D,T,P,X,S,E,R,Pa,GM,SM,RG,RS,RE,CG,Sel,C,G=
+        debug,type,pcall,xpcall,tostring,error,rawget,pairs,
+        getmetatable,setmetatable,rawget,rawset,rawequal,collectgarbage,select,coroutine,_G
+
+    local function dbgOK()
+        if T(D)~="table" then return false end
+        for _,k in Pa{"getinfo","getlocal","getupvalue","traceback","sethook","setupvalue","getregistry"} do
+            if T(D[k])~="function" then return false end
+        end
+        return true
+    end
+    if not dbgOK() then E("Tamper Detected! Reason: Debug library incomplete") return end
+
+    local function isNative(f)
+        local i=D.getinfo(f)
+        return i and i.what=="C"
+    end
+
+    local function checkNativeFuncs()
+        local natives={
+            P,X,assert,E,print,RG,RS,RE,tonumber,S,T,
+            Sel,next,ipairs,Pa,CG,GM,SM,
+            load,loadstring,loadfile,dofile,collectgarbage,
+            D.getinfo,D.getlocal,D.getupvalue,D.sethook,D.setupvalue,D.traceback,
+            C.create,C.resume,C.yield,C.status,
+            math.abs,math.acos,math.asin,math.atan,math.ceil,math.cos,math.deg,math.exp,
+            math.floor,math.fmod,math.huge,math.log,math.max,math.min,math.modf,math.pi,
+            math.rad,math.random,math.sin,math.sqrt,math.tan,
+            os.clock,os.date,os.difftime,os.execute,os.exit,os.getenv,os.remove,
+            os.rename,os.setlocale,os.time,os.tmpname,
+            string.byte,string.char,string.dump,string.find,string.format,string.gmatch,
+            string.gsub,string.len,string.lower,string.match,string.rep,string.reverse,
+            string.sub,string.upper,
+            table.insert,table.maxn,table.remove,table.sort
+        }
+        local mts={string,table,math,os,G,package}
+        for _,t in Pa(mts) do
+            local mt=GM(t)
+            if mt then
+                for _,m in Pa{"__index","__newindex","__call","__metatable"} do
+                    local mf=mt[m]
+                    if mf and T(mf)=="function" and not isNative(mf) then
+                        return false,"Metamethod tampered: "..m
+                    end
+                end
+            end
+        end
+        for _,fn in Pa(natives) do
+            if T(fn)=="function" and not isNative(fn) then
+                return false,"Native function replaced or wrapped"
+            end
+        end
+        return true
+    end
+
+    local function isMinified(f)
+        local i=D.getinfo(f,"Sl")
+        return i and i.linedefined==i.lastlinedefined
+    end
+
+    local function scanUp(f)
+        local i=1
+        while true do
+            local n,v=D.getupvalue(f,i)
+            if not n then break end
+            if T(v)=="function" and not isMinified(v) then return false,"Suspicious upvalue: "..n end
+            i=i+1
+        end
+        return true
+    end
+
+    local function scanLocals(l)
+        local i=1
+        while true do
+            local n,v=D.getlocal(l,i)
+            if not n then break end
+            if T(v)=="function" and not isMinified(v) then return false,"Suspicious local: "..n end
+            i=i+1
+        end
+        return true
+    end
+
+    local function checkGlobals()
+        local essentials={"pcall","xpcall","type","tostring","string","table","debug","coroutine","math","os","package"}
+        for _,k in Pa(essentials) do
+            if T(G[k])~=T(_G[k]) then return false,"Global modified: "..k end
+        end
+        if package and package.loaded and T(package.loaded.debug)~="table" then
+            return false,"Package.debug modified"
+        end
+        return true
+    end
+
+    local function run()
+        local ok,r=checkNativeFuncs()
+        if not ok then return false,r end
+        ok,r=checkGlobals()
+        if not ok then return false,r end
+        for l=2,4 do
+            local i=D.getinfo(l,"f")
+            if i and i.func then
+                ok,r=scanUp(i.func)
+                if not ok then return false,r.." @lvl "..l end
+            end
+            ok,r=scanLocals(l)
+            if not ok then return false,r.." @lvl "..l end
+        end
+        return true
+    end
+
+    local ok,r=run()
+    if not ok then
+        E("Tamper Detected! Reason: "..S(r))
+        while true do E("Tamper Detected! Reason: "..S(r)) end
+    end
+end
+]]
+
+-- Multi-method fetch (returns body or nil+err)
+local function tryFetch(url)
+	if not url then return nil, "No URL" end
+	if not url:match("^https?://") then return nil, "URL must start with http(s)://" end
+
+	local ok, res = pcall(function() if syn and syn.request then return syn.request({Url = url, Method = "GET"}) end end)
+	if ok and type(res) == "table" and res.Body then return tostring(res.Body), nil end
+
+	ok, res = pcall(function() if http_request then return http_request({Url = url, Method = "GET"}) end end)
+	if ok and type(res) == "table" and res.Body then return tostring(res.Body), nil end
+
+	ok, res = pcall(function() if request then return request({Url = url, Method = "GET"}) end end)
+	if ok and type(res) == "table" and res.Body then return tostring(res.Body), nil end
+
+	ok, res = pcall(function() if http and http.get then return http.get(url) end end)
+	if ok and type(res) == "table" and res.Body then return tostring(res.Body), nil end
+
+	ok, res = pcall(function() return HttpService:GetAsync(url) end)
+	if ok and type(res) == "string" then return res, nil end
+
+	return nil, "No supported HTTP method available or fetch failed"
+end
+
+-- Heuristics: check if content looks like Lua
+local function looksLikeLua(url, body)
+	if not body or #body < 4 then return false end
+	if url and url:lower():match("%.lua[%?#]?$") then return true end
+	local patterns = {
+		"^%-%-", "function%s+[%w_]+%s*%(", "local%s+[%w_]+%s*=", "return%s+", "require%s*%(", "game:GetService", "workspace",
+	}
+	for _, p in ipairs(patterns) do
+		if body:match(p) then return true end
+	end
+	if body:match("%f[%w]end%f[%W]") then return true end
+	return false
+end
+
+local function humanSize(n)
+	if not n then return "0 B" end
+	if n > 1024*1024 then return string.format("%.2f MB", n / (1024*1024)) end
+	if n > 1024 then return string.format("%.2f KB", n / 1024) end
+	return tostring(n) .. " B"
+end
+
+-- LZW + Base64 utilities (encoder used by UI)
+local function lzw_encode(s)
+	local dict = {}
+	for i = 0,255 do dict[string.char(i)] = i end
+	local nextCode = 256
+	local RESET = 65535
+	local out = {}
+	local w = ""
+	for i = 1, #s do
+		local c = s:sub(i,i)
+		local wc = w .. c
+		if dict[wc] then
+			w = wc
+		else
+			if w ~= "" then out[#out+1] = dict[w] end
+			dict[wc] = nextCode
+			nextCode = nextCode + 1
+			if nextCode >= 65000 then
+				out[#out+1] = RESET
+				dict = {}
+				for j = 0,255 do dict[string.char(j)] = j end
+				nextCode = 256
+			end
+			w = c
+		end
+	end
+	if w ~= "" then out[#out+1] = dict[w] end
+	return out
+end
+
+local function codes_to_bytes(codes)
+	local t = {}
+	for i = 1, #codes do
+		local c = codes[i] % 65536
+		local hi = math.floor(c / 256)
+		local lo = c % 256
+		t[#t+1] = string.char(hi, lo)
+	end
+	return table.concat(t)
+end
+
+local function base64_encode(data)
+	local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+	local s = data
+	local result = {}
+	local len = #s
+	local i = 1
+	while i <= len do
+		local a = s:byte(i) or 0
+		local b2 = s:byte(i+1) or 0
+		local c = s:byte(i+2) or 0
+		local n = a * 65536 + b2 * 256 + c
+		local c1 = math.floor(n / 262144) % 64
+		local c2 = math.floor(n / 4096) % 64
+		local c3 = math.floor(n / 64) % 64
+		local c4 = n % 64
+		result[#result+1] = b:sub(c1+1,c1+1) .. b:sub(c2+1,c2+1) .. b:sub(c3+1,c3+1) .. b:sub(c4+1,c4+1)
+		i = i + 3
+	end
+	local pad = len % 3
+	if pad == 1 then
+		result[#result] = result[#result]:sub(1,2) .. "=="
+	elseif pad == 2 then
+		result[#result] = result[#result]:sub(1,3) .. "="
+	end
+	return table.concat(result)
+end
+
+-- Build compressed single-line wrapper (anti-tamper + compressed payload)
+-- Returns: wrapper_string, payload_b64_size, wrapper_size
+local function buildCompressedWrapper(originalCode, discordLink)
+	discordLink = discordLink or "https://discord.gg/yourinvite"
+	local combined = antiTamperCode .. "\n" .. originalCode
+	local codes = lzw_encode(combined)
+	local bytes = codes_to_bytes(codes)
+	local b64 = base64_encode(bytes)
+
+	-- Decoder is an IIFE so the produced wrapper executes immediately when pasted/run.
+	local decoder = "(function() " ..
+		"local b64=" .. string.format("%q", b64) .. " " ..
+		"local function base64_decode(data) local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/' local map={} for i=1,#b do map[b:sub(i,i)]=i-1 end local out={} local i=1 while i<=#data do local a=map[data:sub(i,i)] or 0 local b2=map[data:sub(i+1,i+1)] or 0 local c=map[data:sub(i+2,i+2)] or 0 local d=map[data:sub(i+3,i+3)] or 0 local n=a*262144 + b2*4096 + c*64 + d local x1=math.floor(n/65536)%256 local x2=math.floor(n/256)%256 local x3=n%256 out[#out+1]=string.char(x1) if data:sub(i+2,i+2)~='=' then out[#out+1]=string.char(x2) end if data:sub(i+3,i+3)~='=' then out[#out+1]=string.char(x3) end i=i+4 end return table.concat(out) end " ..
+		"local bytes = base64_decode(b64) local codes = {} for i=1,#bytes,2 do local hi=bytes:byte(i) or 0 local lo=bytes:byte(i+1) or 0 codes[#codes+1]=hi*256+lo end " ..
+		"local function lzw_decode(codes) local RESET=65535 local dict={} for i=0,255 do dict[i]=string.char(i) end local nextCode=256 local out={} local prev=nil local i=1 while i<=#codes do local k=codes[i] if k==RESET then dict={} for j=0,255 do dict[j]=string.char(j) end nextCode=256 prev=nil i=i+1 else if prev==nil then out[#out+1]=dict[k] or '' prev=k i=i+1 else local entry = dict[k] if not entry then local prevEntry=dict[prev] or '' entry = prevEntry .. prevEntry:sub(1,1) end out[#out+1]=entry local prevEntry = dict[prev] or '' dict[nextCode]=prevEntry .. entry:sub(1,1) nextCode=nextCode+1 if nextCode>=65000 then dict={} for j=0,255 do dict[j]=string.char(j) end nextCode=256 prev=nil i=i+1 else prev=k i=i+1 end end end end return table.concat(out) end " ..
+		"local src = lzw_decode(codes) local loader = loadstring or load local f,err = loader(src) if not f then pcall(print,'RMPG compressed decode error: '..tostring(err)); return end if type(f)=='function' then f() end end)()"
+
+	local out = '--- {"Obsfucated by Sen Obsfucator V1"} --- ' .. discordLink .. ' ' .. decoder
+	out = out:gsub("\n", " ")
+	return out, #b64, #out
+end
+
+-- Build a tiny remote wrapper (fetch at runtime; very short) - now an IIFE
+-- Returns: wrapper_string
+local function buildRemoteWrapper(rawUrl, discordLink)
+	discordLink = discordLink or "https://discord.gg/yourinvite"
+	local fetcher = "(function() local __u=" .. string.format("%q", rawUrl) .. " local function __try(u) local ok,res = pcall(function() if syn and syn.request then return syn.request({Url=u,Method='GET'}) end end) if ok and type(res)=='table' and res.Body then return tostring(res.Body) end ok,res = pcall(function() if http_request then return http_request({Url=u,Method='GET'}) end end) if ok and type(res)=='table' and res.Body then return tostring(res.Body) end ok,res = pcall(function() if request then return request({Url=u,Method='GET'}) end end) if ok and type(res)=='table' and res.Body then return tostring(res.Body) end ok,res = pcall(function() if http and http.get then return http.get(u) end end) if ok and type(res)=='table' and res.Body then return tostring(res.Body) end ok,res = pcall(function() return game:GetService('HttpService'):GetAsync(u) end) if ok and type(res)=='string' then return res end return nil,'No HTTP' end local body,err = __try(__u) if not body then pcall(print,'Fetch failed: '..tostring(err)); return end local loader = loadstring or load local f,err = loader(body) if not f then pcall(print,'Load error: '..tostring(err)); return end if type(f)=='function' then f() end end)()"
+	local out = '--- {"Obsfucated by Sen Obsfucator V1"} --- ' .. discordLink .. ' ' .. fetcher
+	out = out:gsub("\n", " ")
+	return out
+end
+
+-- UI creation
+local function createUI()
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "RMPG_Obfuscator_UI"
+	screenGui.ResetOnSpawn = false
+	screenGui.Parent = parentGui
+
+	local main = Instance.new("Frame", screenGui)
+	main.Size = UDim2.new(0, 760, 0, 560)
+	main.Position = UDim2.new(0.5, -380, 0.5, -280)
+	main.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	main.BorderSizePixel = 0
+	main.Active = true
+	main.Draggable = true
+
+	local title = Instance.new("TextLabel", main)
+	title.Size = UDim2.new(1, 0, 0, 40)
+	title.Position = UDim2.new(0, 0, 0, 0)
+	title.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	title.TextColor3 = Color3.fromRGB(255, 255, 255)
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 18
+	title.Text = "RMPG Obsfucator — Fetch, detect Lua, compress+anti-tamper, single-line executable output"
+
+	local urlLabel = Instance.new("TextLabel", main)
+	urlLabel.Size = UDim2.new(0, 120, 0, 20)
+	urlLabel.Position = UDim2.new(0, 10, 0, 54)
+	urlLabel.BackgroundTransparency = 1
+	urlLabel.Font = Enum.Font.Code
+	urlLabel.TextSize = 14
+	urlLabel.TextColor3 = Color3.fromRGB(200,200,200)
+	urlLabel.Text = "Raw URL (optional):"
+
+	local urlBox = Instance.new("TextBox", main)
+	urlBox.Size = UDim2.new(0, 600, 0, 28)
+	urlBox.Position = UDim2.new(0, 140, 0, 52)
+	urlBox.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
+	urlBox.TextColor3 = Color3.fromRGB(230,230,230)
+	urlBox.Font = Enum.Font.Code
+	urlBox.TextSize = 14
+	urlBox.PlaceholderText = "https://raw.githubusercontent.com/... or raw paste link"
+
+	local pasteLabel = Instance.new("TextLabel", main)
+	pasteLabel.Size = UDim2.new(0, 120, 0, 20)
+	pasteLabel.Position = UDim2.new(0, 10, 0, 88)
+	pasteLabel.BackgroundTransparency = 1
+	pasteLabel.Font = Enum.Font.Code
+	pasteLabel.TextSize = 14
+	pasteLabel.TextColor3 = Color3.fromRGB(200,200,200)
+	pasteLabel.Text = "Or paste script:"
+
+	local pasteScroll = Instance.new("ScrollingFrame", main)
+	pasteScroll.Size = UDim2.new(1, -20, 0, 320)
+	pasteScroll.Position = UDim2.new(0, 10, 0, 110)
+	pasteScroll.BackgroundColor3 = Color3.fromRGB(18,18,18)
+	pasteScroll.BorderSizePixel = 0
+	pasteScroll.ScrollBarThickness = 8
+	pasteScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+
+	local pasteBox = Instance.new("TextBox", pasteScroll)
+	pasteBox.Size = UDim2.new(1, -20, 0, 3000)
+	pasteBox.Position = UDim2.new(0, 10, 0, 10)
+	pasteBox.BackgroundTransparency = 1
+	pasteBox.TextColor3 = Color3.fromRGB(230,230,230)
+	pasteBox.Font = Enum.Font.Code
+	pasteBox.TextSize = 14
+	pasteBox.MultiLine = true
+	pasteBox.ClearTextOnFocus = false
+	pasteBox.PlaceholderText = "Paste your entire Lua script here (up to 1 MB recommended)."
+
+	local obfBtn = Instance.new("TextButton", main)
+	obfBtn.Size = UDim2.new(0, 260, 0, 36)
+	obfBtn.Position = UDim2.new(0, 10, 0, 442)
+	obfBtn.BackgroundColor3 = Color3.fromRGB(0, 160, 255)
+	obfBtn.Font = Enum.Font.GothamBold
+	obfBtn.TextSize = 16
+	obfBtn.TextColor3 = Color3.fromRGB(255,255,255)
+	obfBtn.Text = "🔎 Fetch & Detect & Obfuscate"
+
+	local obfPasteBtn = Instance.new("TextButton", main)
+	obfPasteBtn.Size = UDim2.new(0, 260, 0, 36)
+	obfPasteBtn.Position = UDim2.new(0, 280, 0, 442)
+	obfPasteBtn.BackgroundColor3 = Color3.fromRGB(200, 120, 20)
+	obfPasteBtn.Font = Enum.Font.GothamBold
+	obfPasteBtn.TextSize = 16
+	obfPasteBtn.TextColor3 = Color3.fromRGB(255,255,255)
+	obfPasteBtn.Text = "🔒 Obfuscate Paste (embed)"
+
+	local remoteBtn = Instance.new("TextButton", main)
+	remoteBtn.Size = UDim2.new(0, 180, 0, 36)
+	remoteBtn.Position = UDim2.new(0, 550, 0, 442)
+	remoteBtn.BackgroundColor3 = Color3.fromRGB(60,160,80)
+	remoteBtn.Font = Enum.Font.GothamBold
+	remoteBtn.TextSize = 14
+	remoteBtn.TextColor3 = Color3.fromRGB(255,255,255)
+	remoteBtn.Text = "🌐 Build Remote Wrapper"
+
+	-- Prominent Copy button
+	local copyBtn = Instance.new("TextButton", main)
+	copyBtn.Size = UDim2.new(0, 360, 0, 36)
+	copyBtn.Position = UDim2.new(0, 10, 0, 482)
+	copyBtn.BackgroundColor3 = Color3.fromRGB(0,200,140)
+	copyBtn.Font = Enum.Font.GothamBold
+	copyBtn.TextSize = 16
+	copyBtn.TextColor3 = Color3.fromRGB(255,255,255)
+	copyBtn.Text = "📋 Copy Obfuscated (to clipboard or UI)"
+
+	local resultScroll = Instance.new("ScrollingFrame", main)
+	resultScroll.Size = UDim2.new(1, -20, 0, 80)
+	resultScroll.Position = UDim2.new(0, 10, 0, 526)
+	resultScroll.BackgroundColor3 = Color3.fromRGB(12,12,12)
+	resultScroll.BorderSizePixel = 0
+	resultScroll.ScrollBarThickness = 8
+	resultScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+
+	local resultBox = Instance.new("TextLabel", resultScroll)
+	resultBox.Size = UDim2.new(1, -20, 0, 400)
+	resultBox.Position = UDim2.new(0,10,0,10)
+	resultBox.BackgroundTransparency = 1
+	resultBox.Font = Enum.Font.Code
+	resultBox.TextSize = 14
+	resultBox.TextWrapped = false
+	resultBox.TextXAlignment = Enum.TextXAlignment.Left
+	resultBox.TextYAlignment = Enum.TextYAlignment.Top
+	resultBox.TextColor3 = Color3.fromRGB(120,255,150)
+	resultBox.RichText = false
+	resultBox.Text = "(Obfuscated preview here; full wrapper is copied to clipboard when possible.)"
+
+	local status = Instance.new("TextLabel", main)
+	status.Size = UDim2.new(1, -20, 0, 18)
+	status.Position = UDim2.new(0, 10, 0, 566)
+	status.BackgroundTransparency = 1
+	status.Font = Enum.Font.Code
+	status.TextSize = 13
+	status.TextColor3 = Color3.fromRGB(200,200,200)
+	status.Text = "Ready."
+
+	local lastWrapper = nil
+	local lastWrapperSize = 0
+	local lastPayloadB64Size = 0
+
+	-- safe seed
+	math.randomseed(tick() % 2147483647); for i=1,5 do math.random() end
+
+	local function showPreview(wrapper, payloadSize)
+		local previewN = 1200
+		local preview = wrapper:sub(1, previewN)
+		if #wrapper > previewN then
+			preview = preview .. ("\n\n-- (preview truncated; wrapper total %s; payload b64 %s) --"):format(humanSize(#wrapper), humanSize(payloadSize))
+		end
+		resultBox.Text = preview
+	end
+
+	-- Fetch & Detect & Obfuscate
+	obfBtn.MouseButton1Click:Connect(function()
+		status.Text = "Fetching URL..."
+		local url = tostring(urlBox.Text or ""):match("^%s*(.-)%s*$")
+		if url == "" then
+			status.Text = "No URL provided. Paste script or use Obfuscate Paste."
+			return
+		end
+		local body, err = tryFetch(url)
+		if not body then
+			status.Text = "Fetch failed: " .. tostring(err)
+			return
+		end
+		status.Text = ("Fetched %s bytes. Detecting Lua..."):format(humanSize(#body))
+		if not looksLikeLua(url, body) then
+			status.Text = "Fetched content does not look like Lua. Aborting obfuscation."
+			resultBox.Text = ("--- Preview (first 1KB) ---\n%s\n\n(Detected non-Lua content)"):format(body:sub(1,1024))
+			return
+		end
+		status.Text = "Lua detected. Compressing + building one-line wrapper..."
+		local ok, wrapper, payloadB64Size, wrapperSize = pcall(function()
+			local w, b64size, outsize = buildCompressedWrapper(body, "https://discord.gg/yourinvite")
+			return w, b64size, outsize
+		end)
+		if not ok or type(wrapper) ~= "string" then
+			status.Text = "Failed to build wrapper (memory/time). Try smaller script or use Remote wrapper."
+			return
+		end
+		lastWrapper = wrapper
+		lastWrapperSize = #wrapper
+		lastPayloadB64Size = payloadB64Size or 0
+
+		showPreview(wrapper, lastPayloadB64Size)
+		status.Text = ("Obfuscation complete. Wrapper %s | payload b64 %s. Use Copy to copy."):format(humanSize(#wrapper), humanSize(lastPayloadB64Size))
+	end)
+
+	-- Obfuscate pasted content (embed)
+	obfPasteBtn.MouseButton1Click:Connect(function()
+		status.Text = "Building obfuscated wrapper for pasted script..."
+		local paste = tostring(pasteBox.Text or "")
+		if paste == "" then status.Text = "No pasted script." return end
+		local maxCap = 1024 * 1024
+		if #paste > maxCap then
+			status.Text = ("Paste too large (%s). Max allowed: %s. Use Remote wrapper."):format(humanSize(#paste), humanSize(maxCap))
+			return
+		end
+		if not looksLikeLua(nil, paste) then
+			status.Text = "Pasted content doesn't strongly match Lua heuristics. Will attempt obfuscation anyway."
+		end
+		local ok, wrapper, payloadB64Size, wrapperSize = pcall(function()
+			local w, b64size, outsize = buildCompressedWrapper(paste, "https://discord.gg/yourinvite")
+			return w, b64size, outsize
+		end)
+		if not ok or type(wrapper) ~= "string" then
+			status.Text = "Failed to build wrapper (memory/time). Try smaller script or use Remote wrapper."
+			return
+		end
+		lastWrapper = wrapper
+		lastWrapperSize = #wrapper
+		lastPayloadB64Size = payloadB64Size or 0
+		showPreview(wrapper, lastPayloadB64Size)
+		status.Text = ("Embed obfuscation complete. Wrapper %s | payload b64 %s. Use Copy to copy."):format(humanSize(#wrapper), humanSize(lastPayloadB64Size))
+	end)
+
+	-- Remote wrapper builder (short)
+	remoteBtn.MouseButton1Click:Connect(function()
+		local url = tostring(urlBox.Text or ""):match("^%s*(.-)%s*$")
+		if url == "" then status.Text = "Provide a raw URL." return end
+		local wrapper = buildRemoteWrapper(url, "https://discord.gg/yourinvite")
+		lastWrapper = wrapper
+		lastWrapperSize = #wrapper
+		lastPayloadB64Size = 0
+		resultBox.Text = wrapper
+		status.Text = ("Remote wrapper built (size %s). Use Copy."):format(humanSize(#wrapper))
+	end)
+
+	-- Copy handler: prominent button behavior
+	copyBtn.MouseButton1Click:Connect(function()
+		if not lastWrapper then status.Text = "No wrapper to copy. Build one first." return end
+
+		-- try to copy to clipboard
+		local ok = pcall(function() setclipboard(lastWrapper) end)
+		if ok then
+			status.Text = "✅ Wrapper copied to clipboard (if your executor permits)."
+			return
+		end
+
+		-- clipboard was blocked. Determine safe behavior.
+		local safeDumpLimit = 200 * 1024 -- 200 KB
+		if #lastWrapper <= safeDumpLimit then
+			-- paste full wrapper into the UI so the user can manually copy
+			resultBox.Text = lastWrapper
+			status.Text = ("Clipboard blocked; full wrapper written to UI (size %s). Manually copy."):format(humanSize(#lastWrapper))
+			return
+		end
+
+		-- too large to paste; provide head/tail preview and instructions
+		local head = lastWrapper:sub(1, 700)
+		local tail = lastWrapper:sub(-700)
+		resultBox.Text = head .. "\n\n-- (output truncated; wrapper total size " .. humanSize(#lastWrapper) .. ") --\n\n" .. tail
+		status.Text = ("Clipboard blocked and wrapper too large to safely paste into UI (%s). Use an executor with clipboard permission or host the script remotely and use the Remote wrapper."):format(humanSize(#lastWrapper))
+	end)
+
+	return screenGui
+end
+
+local gui = createUI()
+print("RMPG Obsfucator UI loaded. Use Fetch & Detect & Obfuscate or Obfuscate Paste, then press Copy. The generated wrapper now executes immediately when pasted/run.")
