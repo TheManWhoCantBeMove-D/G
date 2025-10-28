@@ -5,6 +5,7 @@ Whitelist.Users = {
 	"Tine2199",           -- DOF BUANG
 	"bokya146",      -- dof
 	"nathanbalilia14",           -- otend
+    "2JJJoshligas",           -- otend
 }
 
 return Whitelist
