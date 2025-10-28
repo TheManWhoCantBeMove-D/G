@@ -1,0 +1,10 @@
+local Whitelist = {}
+
+Whitelist.Users = {
+	"theflamming_fire",     -- Sen
+	"Tine2199",           -- DOF BUANG
+	"bokya146",      -- dof
+	"nathanbalilia14",           -- otend
+}
+
+return Whitelist
