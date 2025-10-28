@@ -31,7 +31,7 @@ local ProtectGui = protectgui or (syn and syn.protect_gui) or function(f) end
 
 local Themes = {
     Names = {
-        "LurnaiHub", "Gay", "Red", "Green", "Blue", "Purple", "Orange", "Pink", "Teal", "Yellow", "Lime",
+        "Veinyx", "Gay", "Red", "Green", "Blue", "Purple", "Orange", "Pink", "Teal", "Yellow", "Lime",
         "Amber", "Aqua", "Azure", "Blurple", "Brown", "Burgundy", "Coral", "Crimson", "Cyan", "DarkBlue",
         "DarkGreen", "DarkOrange", "DarkPurple", "DarkRed", "Gold", "Gray", "HotPink", "Indigo", "Jade", "Lavender",
         "LightBlue", "LightGreen", "Magenta", "Maroon", "Mint", "Navy", "Olive", "Peach", "Plum", "Rose",
@@ -39,7 +39,7 @@ local Themes = {
     },
     
     -- Theme 1: LurnaiHub
-    LurnaiHub = {
+    Veinyx = {
         Name = "LurnaiHub",
         Accent = Color3.fromRGB(0, 120, 255),
         AcrylicMain = Color3.fromRGB(15, 20, 30),
