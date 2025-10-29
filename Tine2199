@@ -10,7 +10,10 @@ Whitelist.Users = {
 	"MOBPSYCHO850",           -- DOF BUANG
 	"RAMPAGEONTHETOP",      -- dof
 	"Queen_aliya189",           -- otend
-    "a",           -- otend
+    "OXEN_CANON",           -- otend
+    "HerMajesty_67",      -- dof
+	"Princeforsale1",           -- otend
+    "Jhannabaltero15",           -- otend
 }
 
 return Whitelist
