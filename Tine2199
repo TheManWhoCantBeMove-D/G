@@ -1,8 +1,8 @@
 local Whitelist = {}
 
 Whitelist.Users = {
-	"theflamming_fire",     -- Sen
-	"Tine2199",           -- DOF BUANG
+	"Tine2199",     -- Sen
+	"theflamming_fire",           -- DOF BUANG
 	"bokya146",      -- dof
 	"nathanbalilia14",           -- otend
     "2JJJoshligas",           -- otend
