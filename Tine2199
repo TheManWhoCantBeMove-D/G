@@ -6,6 +6,11 @@ Whitelist.Users = {
 	"bokya146",      -- dof
 	"nathanbalilia14",           -- otend
     "2JJJoshligas",           -- otend
+    "llDylanIl",     -- Sen
+	"s",           -- DOF BUANG
+	"f",      -- dof
+	"s",           -- otend
+    "a",           -- otend
 }
 
 return Whitelist
