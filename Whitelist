@@ -1,0 +1,19 @@
+local Whitelist = {}
+
+Whitelist.Users = {
+	"3loodFoss1l",     -- Sen
+	"s",           -- DOF BUANG
+	"w",      -- dof
+	"s",           -- otend
+    "a",           -- otend
+    "a",     -- Sen
+	"z",           -- DOF BUANG
+	"z",      -- dof
+	"z",           -- otend
+    "z",           -- otend
+    "z",      -- dof
+	"z",           -- otend
+    "z",           -- otend
+}
+
+return Whitelist
