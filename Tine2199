@@ -14,6 +14,19 @@ Whitelist.Users = {
     "HerMajesty_67",      -- dof
 	"Princeforsale1",           -- otend
     "Jhannabaltero15",           -- otend
+    "FLOWofficialmain",     -- Sen
+	"k",           -- DOF BUANG
+	"f",      -- dof
+	"d",           -- otend
+    "c",           -- otend
+    "h",     -- Sen
+	"h",           -- DOF BUANG
+	"f",      -- dof
+	"p",           -- otend
+    "p",           -- otend
+    "z",      -- dof
+	"a",           -- otend
+    "c",           -- otend
 }
 
 return Whitelist
